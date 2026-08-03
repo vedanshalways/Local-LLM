@@ -1,0 +1,52 @@
+/*
+ * Code blocks stay dark in both themes — it reads as a distinct surface against
+ * the light UI and keeps token colours consistent everywhere.
+ */
+
+.hljs { color: #e6edf3; background: transparent; }
+
+.hljs-comment,
+.hljs-quote { color: #8b949e; font-style: italic; }
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-name,
+.hljs-type { color: #ff7b72; }
+
+.hljs-string,
+.hljs-regexp,
+.hljs-template-string,
+.hljs-symbol,
+.hljs-bullet { color: #a5d6ff; }
+
+.hljs-number,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-attr,
+.hljs-selector-pseudo { color: #79c0ff; }
+
+.hljs-title,
+.hljs-section { color: #7ee787; font-weight: 600; }
+
+.hljs-title.function_,
+.hljs-title.class_,
+.hljs-built_in { color: #d2a8ff; }
+
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-params,
+.hljs-selector-class,
+.hljs-selector-id { color: #ffa657; }
+
+.hljs-meta,
+.hljs-meta .hljs-string { color: #8b949e; }
+
+.hljs-addition { color: #aff5b4; }
+.hljs-deletion { color: #ffdcd7; }
+
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }
+.hljs-link { text-decoration: underline; }
