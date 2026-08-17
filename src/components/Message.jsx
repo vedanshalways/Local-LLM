@@ -41,6 +41,7 @@ function MessageInner({
 
   // ------------------------------------------------------------------ user
 
+
   if (message.role === 'user') {
     if (editing) {
       return (
@@ -134,7 +135,11 @@ function MessageInner({
             <span className="banner-spacer">{message.error}</span>
           </div>
         ) : empty && streaming ? (
-          <span className="typing-dot" />
+          <span className="typing-dots" role="status" aria-label="Generating a response">
+            <span />
+            <span />
+            <span />
+          </span>
         ) : (
           <>
             <Markdown>{message.content}</Markdown>

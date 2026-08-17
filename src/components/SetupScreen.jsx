@@ -18,6 +18,7 @@ const INSTALL_COMMAND = {
 export default function SetupScreen({ status, onRecheck, onStartServer }) {
   const toast = useToast()
   const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState(null)
 
   const platform = status?.platform || 'darwin'
   const command = INSTALL_COMMAND[platform] || INSTALL_COMMAND.darwin
@@ -33,10 +34,32 @@ export default function SetupScreen({ status, onRecheck, onStartServer }) {
     }
   }
 
+  /**
+   * A check that finds nothing used to look like a broken button, so every
+   * outcome now leaves a visible answer on the card.
+   */
   const recheck = async () => {
     setBusy(true)
+    setNote(null)
     try {
-      await onRecheck()
+      const next = await onRecheck()
+      if (next?.running) return
+
+      if (next?.error) {
+        setNote({ tone: 'error', text: next.error })
+      } else if (next?.installed) {
+        setNote({
+          tone: 'error',
+          text: `Ollama is installed${next.binary ? ` at ${next.binary}` : ''}, but nothing is answering on ${next.host}.`,
+        })
+      } else {
+        setNote({
+          tone: 'warn',
+          text: `Still no Ollama on this computer. Run the installer you downloaded (OllamaSetup.exe on Windows, the .dmg on macOS) and finish it — downloading the file on its own doesn't install it. Checked ${(next?.hostsTried || []).join(', ') || 'the local server'} and the usual install folders.`,
+        })
+      }
+    } catch (err) {
+      setNote({ tone: 'error', text: err?.message || 'The check failed.' })
     } finally {
       setBusy(false)
     }
@@ -147,6 +170,13 @@ export default function SetupScreen({ status, onRecheck, onStartServer }) {
               </button>
             </div>
           </>
+        )}
+
+        {note && (
+          <div className={`setup-note ${note.tone}`}>
+            <Warning size={16} />
+            <span>{note.text}</span>
+          </div>
         )}
 
         <div

@@ -142,7 +142,7 @@ export default function Sidebar({
       <div className="sidebar-footer">
         <button className="account-row" onClick={onOpenSettings}>
           <div className="avatar">
-            <SettingsIcon size={14} />
+            <SettingsIcon size={18} />
           </div>
           <div className="account-meta">
             <div className="account-name">Settings</div>

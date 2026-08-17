@@ -116,6 +116,14 @@ export const Dots = (p) => (
   </Icon>
 )
 
+export const DotsVertical = (p) => (
+  <Icon {...p} strokeWidth={2.4}>
+    <circle cx="12" cy="5" r=".6" />
+    <circle cx="12" cy="12" r=".6" />
+    <circle cx="12" cy="19" r=".6" />
+  </Icon>
+)
+
 export const ChevronDown = (p) => (
   <Icon {...p} strokeWidth={2}>
     <path d="m6 9 6 6 6-6" />

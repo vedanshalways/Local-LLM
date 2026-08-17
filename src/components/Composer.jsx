@@ -1,13 +1,23 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Paperclip, ArrowUp, Stop, X, File as FileIcon, ImageIcon } from '../lib/icons.jsx'
 import { classNames, formatBytes, stripDataUrl } from '../lib/format.js'
 import { useDismiss } from './ui.jsx'
 
 const MAX_TEXTAREA_HEIGHT = 220
 
-export default function Composer({
-  value,
-  onChange,
+// Chromium sizes the textarea to its content natively; where it does, the JS
+// measurement below (which forces a layout on every keystroke) is skipped.
+const NATIVE_AUTOSIZE =
+  typeof CSS !== 'undefined' && CSS.supports && CSS.supports('field-sizing', 'content')
+
+/**
+ * Owns the draft text itself rather than lifting it into ChatPage. Typing then
+ * re-renders only this subtree instead of the whole conversation on every
+ * keystroke; the parent reads the draft through `onTextChange` (into a ref) and
+ * drives the box through the imperative handle.
+ */
+function ComposerInner({
+  onTextChange,
   onSend,
   onStop,
   streaming,
@@ -19,19 +29,44 @@ export default function Composer({
   supportsVision,
   sendOnEnter = true,
   autoFocus = false,
-}) {
+}, ref) {
   const textareaRef = useRef(null)
+  const [value, setValue] = useState('')
   const [dragging, setDragging] = useState(false)
   const [attachMenu, setAttachMenu] = useState(false)
   const attachRef = useDismiss(() => setAttachMenu(false))
 
-  // Grow the textarea with its content, up to a cap.
-  useEffect(() => {
+  const resize = useCallback(() => {
+    if (NATIVE_AUTOSIZE) return
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`
-  }, [value])
+  }, [])
+
+  const apply = useCallback(
+    (next) => {
+      setValue(next)
+      onTextChange?.(next)
+    },
+    [onTextChange],
+  )
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      clear: () => apply(''),
+      setText: (text) => {
+        apply(text)
+        textareaRef.current?.focus()
+      },
+      focus: () => textareaRef.current?.focus(),
+    }),
+    [apply],
+  )
+
+  // Height only needs recomputing when the text actually changed.
+  useEffect(resize, [value, resize])
 
   useEffect(() => {
     if (autoFocus) textareaRef.current?.focus()
@@ -190,7 +225,7 @@ export default function Composer({
           rows={1}
           value={value}
           placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => apply(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           disabled={disabled}
@@ -216,6 +251,9 @@ export default function Composer({
     </div>
   )
 }
+
+const Composer = forwardRef(ComposerInner)
+export default Composer
 
 function readAsDataUrl(file) {
   return new Promise((resolve, reject) => {

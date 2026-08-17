@@ -6,6 +6,7 @@ import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
 
 import { CopyButton } from './ui.jsx'
+import Chart from './Chart.jsx'
 
 /** Pull the raw text out of a rehype code node so the copy button gets it verbatim. */
 function nodeText(node) {
@@ -29,6 +30,11 @@ const components = {
 
     const language = (className || '').replace('hljs ', '').replace('language-', '').trim() || 'text'
     const raw = nodeText(node)
+
+    // A ```chart block is drawn rather than printed.
+    if (language === 'chart' || language === 'graph' || language === 'plot') {
+      return <Chart source={raw} />
+    }
 
     return (
       <div className="code-block">

@@ -72,6 +72,9 @@ contextBridge.exposeInMainWorld('api', {
     showItem: (target) => call('app:show-item', target),
     info: () => call('app:info'),
     confirm: (payload) => call('app:confirm', payload),
+    popupMenu: (position) => call('app:popup-menu', position),
+    setTitleBarTheme: (theme) => call('app:titlebar-theme', theme),
+    platform: process.platform,
     onMenu: (handler) => {
       const offNew = on('menu:new-chat', () => handler({ type: 'new-chat' }))
       const offSearch = on('menu:search', () => handler({ type: 'search' }))

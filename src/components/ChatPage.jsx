@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Composer from './Composer.jsx'
 import Message from './Message.jsx'
 import ModelPicker from './ModelPicker.jsx'
-import { uid, useToast } from './ui.jsx'
+import { uid, useToast, Spinner } from './ui.jsx'
 import { ChevronDown, X, Boxes, Warning } from '../lib/icons.jsx'
 import { ICONS_BY_NAME, Sparkle } from '../lib/icons.jsx'
 import { STARTERS } from '../lib/catalog.js'
@@ -11,6 +11,25 @@ import logoUrl from '../../assets/icon-512.png'
 import { isVisionModel, isEmbeddingModel, titleFromText, classNames } from '../lib/format.js'
 
 const FLUSH_INTERVAL_MS = 60
+
+/**
+ * Appended to every system prompt: models otherwise answer "graph this" with an
+ * ASCII table. The app draws these blocks, so the instruction is a capability
+ * statement rather than a style note.
+ */
+const CHART_INSTRUCTIONS = `When a chart, graph or plot would answer the question, emit a fenced \`\`\`chart block containing JSON. The app renders it as a real chart.
+
+For an equation, give the expression and a domain:
+\`\`\`chart
+{"type":"line","title":"y = 2x + 5","fn":"2*x + 5","domain":[-10,10],"xLabel":"x","yLabel":"y"}
+\`\`\`
+
+For data points, give them directly:
+\`\`\`chart
+{"type":"bar","title":"Revenue by quarter","yLabel":"USD (millions)","data":[{"label":"Q1","y":12},{"label":"Q2","y":19}]}
+\`\`\`
+
+Rules: type is line, bar, scatter or area. Use "fn" (an expression in x, e.g. "sin(x)/x") or "data", never both. Several lines go in "series":[{"name":"...","fn":"..."}]. Emit only valid JSON inside the block, no comments or trailing commas, and keep your ordinary prose outside it. Never draw a chart as ASCII art or as a table of numbers when a chart block would do.`
 
 export default function ChatPage({
   chat,
@@ -29,7 +48,10 @@ export default function ChatPage({
   const toast = useToast()
 
   const [messages, setMessages] = useState(chat?.messages || [])
-  const [input, setInput] = useState('')
+  // The draft lives in the Composer; here it's only mirrored into a ref so
+  // sending can read it without a re-render per keystroke.
+  const inputRef = useRef('')
+  const composerRef = useRef(null)
   const [attachments, setAttachments] = useState([])
   const [streaming, setStreaming] = useState(null) // { requestId, messageId }
   const [streamText, setStreamText] = useState({ content: '', thinking: '' })
@@ -59,7 +81,8 @@ export default function ChatPage({
       return
     }
     setMessages(chat?.messages || [])
-    setInput('')
+    inputRef.current = ''
+    composerRef.current?.clear()
     setAttachments([])
     setStreaming(null)
     setStreamText({ content: '', thinking: '' })
@@ -117,10 +140,17 @@ export default function ChatPage({
   // ---------------------------------------------------------- api payload
 
   const buildRequestMessages = useCallback(
-    (history) => {
+    (history, targetModel) => {
       const payload = []
-      const systemPrompt = (chatRef.current?.systemPrompt || settings.systemPrompt || '').trim()
+      const systemPrompt = [chatRef.current?.systemPrompt || settings.systemPrompt || '', CHART_INSTRUCTIONS]
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join('\n\n')
       if (systemPrompt) payload.push({ role: 'system', content: systemPrompt })
+
+      // Images only ever go to a model that can see them; a text-only model never
+      // receives them, and never receives a stand-in for them either.
+      const canSee = isVisionModel(models.find((m) => m.name === targetModel))
 
       for (const message of history) {
         if (message.error) continue // never feed a failed turn back to the model
@@ -131,14 +161,16 @@ export default function ChatPage({
         }
 
         const entry = { role: message.role, content }
-        const images = (message.images || []).map((image) => image.base64).filter(Boolean)
-        if (images.length) entry.images = images
+        if (canSee) {
+          const images = (message.images || []).map((image) => image.base64).filter(Boolean)
+          if (images.length) entry.images = images
+        }
         payload.push(entry)
       }
 
       return payload
     },
-    [settings.systemPrompt],
+    [settings.systemPrompt, models],
   )
 
   const generationOptions = useMemo(
@@ -182,7 +214,7 @@ export default function ChatPage({
         result = await window.api.ollama.chat({
           requestId,
           model,
-          messages: buildRequestMessages(history),
+          messages: buildRequestMessages(history, model),
           options: generationOptions,
           keepAlive: settings.keepAlive,
         })
@@ -280,7 +312,7 @@ export default function ChatPage({
 
   const send = useCallback(
     async ({ overrideText, dropImages = false, modelOverride } = {}) => {
-      const text = (overrideText ?? input).trim()
+      const text = (overrideText ?? inputRef.current).trim()
       const model = modelOverride || selectedModel
       if (!text && attachments.length === 0) return
 
@@ -292,8 +324,8 @@ export default function ChatPage({
       const allImages = attachments.filter((a) => a.kind === 'image')
       const files = attachments.filter((a) => a.kind === 'file')
 
-      // Sending images to a text-only model always fails server-side, so stop here
-      // and offer the ways out instead of surfacing a request error.
+      // Images are only ever read by a model that can see them. Sending them to a
+      // text-only model fails server-side, so stop here and offer the ways out.
       const modelSupportsVision = isVisionModel(models.find((m) => m.name === model))
       if (allImages.length && !modelSupportsVision && !dropImages) {
         setVisionBlock({ model, count: allImages.length })
@@ -319,8 +351,7 @@ export default function ChatPage({
           name: image.name,
           mime: image.mime,
           dataUrl: image.dataUrl,
-          base64: image.base64,
-        })),
+          base64: image.base64,        })),
         files: files.map((file) => ({ name: file.name, size: file.size, text: file.text })),
         createdAt: new Date().toISOString(),
       }
@@ -338,7 +369,8 @@ export default function ChatPage({
       const withPlaceholder = [...history, assistantMessage]
 
       setMessages(withPlaceholder)
-      setInput('')
+      inputRef.current = ''
+      composerRef.current?.clear()
       setAttachments([])
       setAtBottom(true)
       await persistTo(current.id, withPlaceholder, { model })
@@ -347,7 +379,7 @@ export default function ChatPage({
       await maybeAutoTitle(current.id, finished, model)
     },
     [
-      input, attachments, selectedModel, models, onCreateChat,
+      attachments, selectedModel, models, onCreateChat,
       persistTo, runGeneration, maybeAutoTitle, toast,
     ],
   )
@@ -449,13 +481,11 @@ export default function ChatPage({
     <div className="vision-notice">
       <Warning size={16} />
       <div className="vn-body">
-        <div className="vn-title">
-          {visionBlock.model} can't read images
-        </div>
+        <div className="vn-title">{visionBlock.model} can't read images</div>
         <div className="vn-text">
           {visionAlternative
             ? `${visionAlternative.name} is installed and can. Switch to it, or send your message without the ${visionBlock.count === 1 ? 'image' : 'images'}.`
-            : `No vision model is installed yet. Download one — llava is about 4.7 GB — or send your message without the ${visionBlock.count === 1 ? 'image' : 'images'}.`}
+            : `Only a vision model can read ${visionBlock.count === 1 ? 'an image' : 'images'}. Download one — moondream is about 1.7 GB, llava about 4.7 GB — or send without ${visionBlock.count === 1 ? 'it' : 'them'}.`}
         </div>
         <div className="vn-actions">
           {visionAlternative ? (
@@ -486,8 +516,10 @@ export default function ChatPage({
 
   const composer = (
     <Composer
-      value={input}
-      onChange={setInput}
+      ref={composerRef}
+      onTextChange={(text) => {
+        inputRef.current = text
+      }}
       onSend={() => send()}
       onStop={stop}
       streaming={Boolean(streaming)}
@@ -553,8 +585,7 @@ export default function ChatPage({
                 : 'Running privately on this computer.'}
           </p>
           <div className="welcome-composer">
-            {visionNotice}
-            {composer}
+            {visionNotice}            {composer}
           </div>
           <div className="starters">
             {STARTERS.map((starter) => {
@@ -563,7 +594,7 @@ export default function ChatPage({
                 <button
                   key={starter.label}
                   className="starter-chip"
-                  onClick={() => setInput(starter.prompt)}
+                  onClick={() => composerRef.current?.setText(starter.prompt)}
                   disabled={blocked}
                 >
                   <Icon size={15} />
@@ -601,8 +632,7 @@ export default function ChatPage({
           )}
 
           <div className="composer-dock">
-            {visionNotice}
-            {composer}
+            {visionNotice}            {composer}
             <div className="composer-hint">
               Responses come from a model running on this computer. Chats are stored locally.
             </div>

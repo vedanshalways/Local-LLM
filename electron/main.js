@@ -10,7 +10,7 @@ const { LocalStore } = require('./store')
 // Only `npm run dev` sets NODE_ENV — everything else loads the built bundle,
 // including an unpackaged `npm start`.
 const isDev = process.env.NODE_ENV === 'development'
-const DEV_URL = 'http://localhost:5173'
+const DEV_URL = 'http://localhost:5199' // must match server.port in vite.config.mjs
 
 let mainWindow = null
 let store = null
@@ -18,7 +18,26 @@ let ollama = null
 
 const ICON_PATH = path.join(__dirname, '..', 'assets', 'icon.png')
 
-function createWindow() {
+const isMac = process.platform === 'darwin'
+
+// Height of the custom Chrome-style title bar drawn by the renderer. The native
+// window-control overlay has to match it exactly or the buttons sit off-centre.
+const TITLEBAR_HEIGHT = 40
+
+/** Caption-button colours for the overlay — these must track the app theme. */
+function overlayFor(theme) {
+  return theme === 'dark'
+    ? { color: '#101014', symbolColor: '#d4d4d8', height: TITLEBAR_HEIGHT }
+    : { color: '#e7e7ec', symbolColor: '#3f3f46', height: TITLEBAR_HEIGHT }
+}
+
+/** Resolve the stored preference ('system' included) to a concrete theme. */
+function resolveTheme(preference) {
+  if (preference === 'light' || preference === 'dark') return preference
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+}
+
+function createWindow(theme) {
   mainWindow = new BrowserWindow({
     icon: ICON_PATH,
     width: 1360,
@@ -26,9 +45,15 @@ function createWindow() {
     minWidth: 760,
     minHeight: 560,
     show: false,
-    backgroundColor: '#ffffff',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    trafficLightPosition: { x: 16, y: 18 },
+    backgroundColor: theme === 'dark' ? '#101014' : '#e7e7ec',
+    // Both platforms hide the system title bar; the renderer draws its own strip
+    // with the traffic lights (mac) or the overlay buttons (Windows/Linux) in it.
+    titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
+    ...(isMac ? {} : { titleBarOverlay: overlayFor(theme) }),
+    trafficLightPosition: { x: 14, y: 12 },
+    // The menu bar lives behind the ⋮ button now; keeping the menu installed but
+    // hidden is what keeps its accelerators (Ctrl+N, Ctrl+K, …) working.
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -39,6 +64,8 @@ function createWindow() {
       backgroundThrottling: false,
     },
   })
+
+  if (!isMac) mainWindow.setMenuBarVisibility(false)
 
   mainWindow.once('ready-to-show', () => mainWindow.show())
 
@@ -83,7 +110,6 @@ function send(channel, payload) {
 }
 
 function buildMenu() {
-  const isMac = process.platform === 'darwin'
   const template = [
     ...(isMac ? [{ role: 'appMenu' }] : []),
     {
@@ -131,6 +157,32 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+/**
+ * The single flat menu behind the ⋮ button, in Chrome's order: the things you
+ * reach for first at the top, window plumbing at the bottom.
+ */
+function buildAppMenu() {
+  return Menu.buildFromTemplate([
+    { label: 'New chat', accelerator: 'CmdOrCtrl+N', click: () => send('menu:new-chat') },
+    { label: 'Search chats', accelerator: 'CmdOrCtrl+K', click: () => send('menu:search') },
+    { type: 'separator' },
+    { label: 'Chats', accelerator: 'CmdOrCtrl+1', click: () => send('menu:route', 'chat') },
+    { label: 'Models', accelerator: 'CmdOrCtrl+2', click: () => send('menu:route', 'models') },
+    { type: 'separator' },
+    { label: 'Zoom in', role: 'zoomIn' },
+    { label: 'Zoom out', role: 'zoomOut' },
+    { label: 'Reset zoom', role: 'resetZoom' },
+    { label: 'Full screen', role: 'togglefullscreen' },
+    { type: 'separator' },
+    { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+    { label: 'More tools', submenu: [{ role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' }] },
+    { type: 'separator' },
+    { label: 'Settings', accelerator: 'CmdOrCtrl+,', click: () => send('menu:settings') },
+    { type: 'separator' },
+    isMac ? { role: 'close' } : { label: 'Exit', role: 'quit' },
+  ])
+}
+
 app.whenReady().then(boot).catch((err) => {
   console.error('Startup failed:', err)
   dialog.showErrorBox('Local Graph could not start', String(err?.stack || err))
@@ -140,7 +192,7 @@ app.whenReady().then(boot).catch((err) => {
 async function boot() {
   // Packaged macOS builds take the icon from the bundle; running unpackaged needs
   // it set explicitly or the dock shows the default Electron icon.
-  if (process.platform === 'darwin' && !app.isPackaged && app.dock) {
+  if (isMac && !app.isPackaged && app.dock) {
     try {
       app.dock.setIcon(ICON_PATH)
     } catch {
@@ -155,7 +207,7 @@ async function boot() {
 
   registerIpc()
   buildMenu()
-  createWindow()
+  createWindow(resolveTheme(settings.theme))
 
   // Bring the local server up in the background so the first chat isn't blocked on it.
   if (settings.autoStartServer) {
@@ -166,7 +218,7 @@ async function boot() {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(resolveTheme(settings.theme))
   })
 }
 
@@ -330,6 +382,32 @@ function registerIpc() {
   // -------------------------------------------------------------------- app
   handle('app:open-external', (url) => {
     if (/^https?:\/\//.test(url)) shell.openExternal(url)
+    return { ok: true }
+  })
+
+  // Drop the ⋮ menu right under the button that opened it, Chrome-style.
+  handle('app:popup-menu', ({ x, y } = {}) => {
+    buildAppMenu().popup({
+      window: mainWindow,
+      x: Math.round(x ?? 0),
+      y: Math.round(y ?? TITLEBAR_HEIGHT),
+    })
+    return { ok: true }
+  })
+
+  // The renderer owns theme resolution ('system' included), so it tells us which
+  // colours to paint the caption buttons in.
+  handle('app:titlebar-theme', (theme) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return { ok: false }
+    const overlay = overlayFor(theme)
+    mainWindow.setBackgroundColor(overlay.color)
+    if (!isMac) {
+      try {
+        mainWindow.setTitleBarOverlay(overlay)
+      } catch {
+        /* overlay unsupported on this platform — the strip still renders */
+      }
+    }
     return { ok: true }
   })
 

@@ -6,6 +6,14 @@
   inherits: true;
 }
 
+/* Multiplies the halo opacity so the glow breathes. Animating this rather than
+   `opacity` directly leaves the focus/drag states free to raise the base level. */
+@property --glow-pulse {
+  syntax: '<number>';
+  initial-value: 1;
+  inherits: true;
+}
+
 :root {
   --font-sans: 'Inter var', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
@@ -26,18 +34,25 @@
   --warning: #f5a524;
   --success: #30a46c;
 
-  /* The colour flow used by the composer glow. */
-  --flow: conic-gradient(
-    from var(--glow-angle),
+  /* Colour stops for the composer glow. Kept separate from the gradient itself
+     because `var(--glow-angle)` has to be substituted on the element that
+     animates it — resolved here it would freeze at the initial 0deg.
+
+     The ramp repeats twice around the circle so opposite edges of the composer
+     land on the same colour: on a box this wide a single sweep gives the top
+     edge one half of the spectrum and the bottom edge the other, which reads as
+     one side glowing and the other not. Every stop is mid-luminance for the same
+     reason — pale cyans and oranges disappear against the light theme. */
+  --flow-stops:
     #6366f1 0%,
-    #8b5cf6 14%,
-    #d946ef 28%,
-    #f43f5e 42%,
-    #fb923c 56%,
-    #22d3ee 72%,
-    #3b82f6 86%,
-    #6366f1 100%
-  );
+    #a855f7 12.5%,
+    #ec4899 25%,
+    #8b5cf6 37.5%,
+    #6366f1 50%,
+    #a855f7 62.5%,
+    #ec4899 75%,
+    #8b5cf6 87.5%,
+    #6366f1 100%;
 
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -69,9 +84,15 @@
   --shadow-lg: 0 18px 50px rgba(9, 9, 11, 0.13);
   --shadow-composer: 0 10px 34px rgba(9, 9, 11, 0.09);
 
+  --titlebar-bg: #e7e7ec;
+  --titlebar-tab: #fafafa;
+  --titlebar-icon: #45454e;
+  --titlebar-hover: rgba(255, 255, 255, 0.62);
+
   --scrollbar: rgba(9, 9, 11, 0.16);
-  --glow-strength: 0.4;
-  --glow-strength-focus: 0.72;
+  /* Lower than dark: on white, the halo washes the ring out before it looks bright. */
+  --glow-strength: 0.45;
+  --glow-strength-focus: 0.8;
   color-scheme: light;
 }
 
@@ -102,9 +123,14 @@
   --shadow-lg: 0 18px 50px rgba(0, 0, 0, 0.6);
   --shadow-composer: 0 10px 40px rgba(0, 0, 0, 0.5);
 
+  --titlebar-bg: #101014;
+  --titlebar-tab: #141418;
+  --titlebar-icon: #c7c7cf;
+  --titlebar-hover: rgba(255, 255, 255, 0.1);
+
   --scrollbar: rgba(255, 255, 255, 0.18);
-  --glow-strength: 0.5;
-  --glow-strength-focus: 0.85;
+  --glow-strength: 0.66;
+  --glow-strength-focus: 1;
   color-scheme: dark;
 }
 
@@ -146,9 +172,137 @@ a { color: var(--accent); }
 
 ::selection { background: rgba(99, 102, 241, 0.22); }
 
+/* =========================================================== titlebar ==== */
+
+/* One Chrome-style strip: tab, new-tab button, ⋮ menu, then the native window
+   controls. The right padding carves out exactly the space the Windows/Linux
+   overlay buttons occupy; on macOS the env() vars are absent and it falls back
+   to a plain 8px gutter. */
+.titlebar {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  height: 40px;
+  flex-shrink: 0;
+  padding-left: 8px;
+  padding-right: calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 6px);
+  background: var(--titlebar-bg);
+  -webkit-app-region: drag;
+  user-select: none;
+  position: relative;
+  z-index: 40;
+}
+
+.mac .titlebar { padding-left: 82px; }
+
+.titlebar-drag { flex: 1; min-width: 12px; }
+.titlebar button, .titlebar-tab { -webkit-app-region: no-drag; }
+
+.titlebar-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+/* The active tab merges into the surface below it, the way Chrome's does. */
+.titlebar-tab {
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 33px;
+  flex: 1 1 200px;
+  min-width: 54px;
+  max-width: 240px;
+  padding: 0 8px 0 13px;
+  border-radius: 11px 11px 0 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  user-select: none;
+  transition: background 0.12s;
+}
+
+.titlebar-tab:hover { background: var(--titlebar-hover); }
+
+.titlebar-tab.active {
+  background: var(--titlebar-tab);
+  color: var(--text-primary);
+  font-weight: 550;
+}
+
+.titlebar-tab-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.titlebar-tab-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Only the tab you're pointing at (or on) offers its close button, so a row of
+   tabs stays quiet. */
+.titlebar-tab-close {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+.titlebar-tab:hover .titlebar-tab-close,
+.titlebar-tab.active .titlebar-tab-close { opacity: 1; }
+.titlebar-tab-close:hover { background: var(--titlebar-hover); color: var(--text-primary); }
+
+/* Below this the label is gone anyway; keep the icon and drop the close button. */
+.titlebar-tab:not(.active) .titlebar-tab-close { display: none; }
+@media (min-width: 900px) {
+  .titlebar-tab:not(.active) .titlebar-tab-close { display: grid; }
+}
+
+.titlebar-newtab,
+.titlebar-menu {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--titlebar-icon);
+  transition: background 0.14s;
+}
+
+.titlebar-newtab { margin-left: 4px; }
+.titlebar-newtab:hover,
+.titlebar-menu:hover { background: var(--titlebar-hover); }
+
 /* ============================================================= layout ==== */
 
-.app { display: flex; height: 100vh; overflow: hidden; }
+.app-frame { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+.app { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+
+.pane-float-actions {
+  position: absolute;
+  top: 11px;
+  left: 12px;
+  display: flex;
+  gap: 4px;
+  z-index: 30;
+}
 
 .main-pane {
   flex: 1;
@@ -180,11 +334,7 @@ a { color: var(--accent); }
   justify-content: space-between;
   gap: 4px;
   padding: 12px 12px 6px;
-  -webkit-app-region: drag;
 }
-
-.mac .sidebar-header { padding-top: 44px; }
-.sidebar-header button { -webkit-app-region: no-drag; }
 
 .icon-btn {
   display: inline-flex;
@@ -322,8 +472,8 @@ a { color: var(--accent); }
   width: 28px;
   height: 28px;
   border-radius: 9px;
-  background: linear-gradient(135deg, #6366f1, #a855f7 55%, #ec4899);
-  color: #fff;
+  background: none;
+  color: var(--text-primary);
   display: grid;
   place-items: center;
   font-size: 12px;
@@ -349,8 +499,6 @@ a { color: var(--accent); }
   z-index: 20;
 }
 
-.mac .topbar { height: 66px; }
-.mac.sidebar-hidden .topbar { padding-left: 88px; }
 .topbar > * { -webkit-app-region: no-drag; }
 
 .topbar-title { font-size: 17px; font-weight: 640; letter-spacing: -0.02em; }
@@ -612,19 +760,38 @@ a { color: var(--accent); }
 
 /* --- streaming affordances --- */
 
-.typing-dot {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 1.4em;
+  vertical-align: middle;
+}
+
+.typing-dots span {
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: linear-gradient(135deg, #6366f1, #d946ef);
-  animation: pulse 1.15s ease-in-out infinite;
-  vertical-align: middle;
+  animation: typing-bounce 1.25s ease-in-out infinite;
+}
+
+/* Staggered so the three read as one wave rather than three blinks. */
+.typing-dots span:nth-child(2) { animation-delay: 0.16s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes typing-bounce {
+  0%, 70%, 100% { opacity: 0.32; transform: translateY(0) scale(0.86); }
+  35% { opacity: 1; transform: translateY(-5px) scale(1); }
 }
 
 @keyframes pulse {
   0%, 100% { opacity: 0.3; transform: scale(0.8); }
   50% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-dots span { animation-name: pulse; }
 }
 
 .stream-cursor {
@@ -739,31 +906,59 @@ a { color: var(--accent); }
   position: relative;
   max-width: var(--content-width);
   margin: 0 auto;
-  padding: 1.5px;
+  padding: 2px;
   border-radius: var(--radius-xl);
+  /* Built here, not on :root, so it re-resolves against the angle this element
+     animates. The blurred ::before inherits the finished gradient in step. */
+  --flow: conic-gradient(from var(--glow-angle), var(--flow-stops));
   background: var(--flow);
-  animation: glow-rotate 7s linear infinite;
+  animation: glow-rotate 7s linear infinite, glow-breathe 3.8s ease-in-out infinite;
   box-shadow: var(--shadow-composer);
 }
 
-.composer-glow::before {
+/* Two halos: a tight bright one that hugs the ring, and a wide diffuse one that
+   spills onto the page. One layer alone reads as either a hard edge or a smudge. */
+.composer-glow::before,
+.composer-glow::after {
   content: '';
   position: absolute;
-  inset: -9px;
-  border-radius: 38px;
   background: var(--flow);
-  filter: blur(20px);
-  opacity: var(--glow-strength);
   z-index: -1;
-  transition: opacity 0.35s var(--ease), inset 0.35s var(--ease);
   pointer-events: none;
+  transition: opacity 0.35s var(--ease), inset 0.35s var(--ease);
 }
 
-.composer-glow:focus-within::before { opacity: var(--glow-strength-focus); inset: -13px; }
-.composer-glow.dragging::before { opacity: 0.9; inset: -15px; }
+.composer-glow::before {
+  inset: -10px;
+  border-radius: 38px;
+  filter: blur(18px);
+  opacity: calc(var(--glow-strength) * var(--glow-pulse));
+}
+
+.composer-glow::after {
+  inset: -26px;
+  border-radius: 54px;
+  filter: blur(42px);
+  opacity: calc(var(--glow-strength) * var(--glow-pulse) * 0.55);
+  z-index: -2;
+}
+
+.composer-glow:focus-within::before { inset: -14px; }
+.composer-glow:focus-within::after { inset: -34px; }
+.composer-glow:focus-within::before,
+.composer-glow:focus-within::after { --glow-strength: var(--glow-strength-focus); }
+
+.composer-glow.dragging::before { inset: -16px; }
+.composer-glow.dragging::after { inset: -38px; }
+.composer-glow.dragging::before,
+.composer-glow.dragging::after { --glow-strength: 1; }
 
 @keyframes glow-rotate {
   to { --glow-angle: 360deg; }
+}
+
+@keyframes glow-breathe {
+  50% { --glow-pulse: 1.5; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -830,6 +1025,9 @@ a { color: var(--accent); }
   border: none;
   resize: none;
   outline: none;
+  /* Native content sizing where it exists, so growing the box costs no JS and
+     no forced layout per keystroke. */
+  field-sizing: content;
   font-size: 15.5px;
   line-height: 1.55;
   padding: 10px 4px;
@@ -848,6 +1046,9 @@ a { color: var(--accent); }
   place-items: center;
   color: var(--text-secondary);
   flex-shrink: 0;
+  /* The row is bottom-aligned so the buttons stay put as the textarea grows;
+     this offset centres them against the first line while it's short. */
+  margin-bottom: 4px;
   transition: background 0.15s, color 0.15s;
 }
 
@@ -860,6 +1061,7 @@ a { color: var(--accent); }
   border-radius: 50%;
   display: grid;
   place-items: center;
+  margin-bottom: 4px;
   background: linear-gradient(135deg, #6366f1, #a855f7 60%, #d946ef);
   color: #fff;
   flex-shrink: 0;
@@ -870,6 +1072,60 @@ a { color: var(--accent); }
 .send-btn:disabled { opacity: 0.28; cursor: not-allowed; box-shadow: none; }
 .send-btn:not(:disabled):hover { transform: scale(1.06); filter: brightness(1.08); }
 .send-btn.stop { background: var(--text-primary); color: var(--bg-app); box-shadow: none; }
+
+/* ============================================================= charts ==== */
+
+.chart {
+  position: relative;
+  margin: 14px 0;
+  padding: 14px 14px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.chart-title { font-size: 14px; font-weight: 600; letter-spacing: -0.015em; margin-bottom: 10px; }
+
+.chart-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 8px; font-size: 12.5px; color: var(--text-secondary); }
+.chart-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.chart-legend i { width: 10px; height: 10px; border-radius: 3px; }
+
+.chart-svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+/* Grid and axes stay recessive so the marks carry the chart. */
+.chart-grid { stroke: var(--border); stroke-width: 1; }
+.chart-axis { stroke: var(--border-strong); stroke-width: 1; }
+.chart-tick { fill: var(--text-tertiary); font-size: 11px; font-family: var(--font-sans); }
+.chart-axis-label { fill: var(--text-secondary); font-size: 11.5px; font-family: var(--font-sans); }
+.chart-hover line { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 3 3; }
+
+.chart circle, .chart rect { cursor: crosshair; }
+
+.chart-tooltip {
+  position: absolute;
+  top: 6px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.chart-data { margin-top: 8px; font-size: 12.5px; }
+.chart-data summary { cursor: pointer; color: var(--text-tertiary); }
+.chart-data table { width: 100%; margin-top: 8px; border-collapse: collapse; }
+.chart-data th, .chart-data td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+.chart-data th { color: var(--text-tertiary); font-weight: 550; }
+
+.chart-error { margin: 12px 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-subtle); }
+.chart-error-title { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
+.chart-error pre { margin: 0; overflow-x: auto; font-size: 12px; }
 
 .vision-notice {
   display: flex;
@@ -1445,6 +1701,25 @@ textarea.text-input { resize: vertical; min-height: 96px; line-height: 1.6; font
 }
 
 .setup-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+/* The result of the last check — a check that finds nothing has to say so. */
+.setup-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 20px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.setup-note svg { flex-shrink: 0; margin-top: 1px; }
+.setup-note.warn { background: rgba(245, 165, 36, 0.1); border: 1px solid rgba(245, 165, 36, 0.28); color: var(--text-primary); }
+.setup-note.warn svg { color: var(--warning); }
+.setup-note.error { background: rgba(229, 72, 77, 0.09); border: 1px solid rgba(229, 72, 77, 0.28); color: var(--text-primary); }
+.setup-note.error svg { color: var(--danger); }
 
 .banner {
   display: flex;

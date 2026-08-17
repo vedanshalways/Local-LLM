@@ -7,24 +7,53 @@ const path = require('path')
 
 const DEFAULT_HOST = 'http://127.0.0.1:11434'
 
-/** Places Ollama commonly installs to, since GUI apps don't inherit a login shell PATH. */
-const BINARY_CANDIDATES = [
-  '/usr/local/bin/ollama',
-  '/opt/homebrew/bin/ollama',
-  '/usr/bin/ollama',
-  '/snap/bin/ollama',
-  '/Applications/Ollama.app/Contents/Resources/ollama',
-  path.join(os.homedir(), '.ollama', 'bin', 'ollama'),
-  path.join(os.homedir(), '.local', 'bin', 'ollama'),
-  'C:\\Program Files\\Ollama\\ollama.exe',
-  path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Ollama', 'ollama.exe'),
+/** Loopback addresses to probe when the configured host is a local default. A
+ *  server can end up on any of these depending on how it was started. */
+const LOOPBACK_HOSTS = [
+  'http://127.0.0.1:11434',
+  'http://localhost:11434',
+  'http://[::1]:11434',
 ]
+
+/** Places Ollama commonly installs to, since GUI apps don't inherit a login shell PATH. */
+function binaryCandidates() {
+  const home = os.homedir()
+  const env = process.env
+
+  if (process.platform === 'win32') {
+    // Built from the environment rather than hardcoded to C:, and covering the
+    // installer, winget, Chocolatey and Scoop layouts.
+    const roots = [
+      env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Programs', 'Ollama'),
+      env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Ollama'),
+      env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links'),
+      env.ProgramFiles && path.join(env.ProgramFiles, 'Ollama'),
+      env.ProgramW6432 && path.join(env.ProgramW6432, 'Ollama'),
+      env['ProgramFiles(x86)'] && path.join(env['ProgramFiles(x86)'], 'Ollama'),
+      env.ProgramData && path.join(env.ProgramData, 'chocolatey', 'bin'),
+      path.join(home, 'scoop', 'shims'),
+      path.join(home, 'AppData', 'Local', 'Programs', 'Ollama'),
+    ].filter(Boolean)
+    return roots.map((root) => path.join(root, 'ollama.exe'))
+  }
+
+  return [
+    '/usr/local/bin/ollama',
+    '/opt/homebrew/bin/ollama',
+    '/usr/bin/ollama',
+    '/snap/bin/ollama',
+    '/Applications/Ollama.app/Contents/Resources/ollama',
+    path.join(home, '.ollama', 'bin', 'ollama'),
+    path.join(home, '.local', 'bin', 'ollama'),
+    path.join(home, 'Applications', 'Ollama.app', 'Contents', 'Resources', 'ollama'),
+  ]
+}
 
 let serverProcess = null
 
 /** Locate the ollama binary on disk, falling back to a PATH lookup. */
 function findBinary() {
-  for (const candidate of BINARY_CANDIDATES) {
+  for (const candidate of binaryCandidates()) {
     try {
       fs.accessSync(candidate, fs.constants.X_OK)
       return candidate
@@ -35,10 +64,53 @@ function findBinary() {
   return null
 }
 
-function which() {
+/**
+ * Windows writes PATH changes to the registry, but a running process keeps the
+ * copy it was launched with. Installing Ollama while this app is open therefore
+ * leaves `where` blind to it — so read the current PATH back before looking.
+ */
+function freshWindowsPath() {
   return new Promise((resolve) => {
-    const cmd = process.platform === 'win32' ? 'where' : 'which'
-    execFile(cmd, ['ollama'], { timeout: 3000 }, (err, stdout) => {
+    const keys = [
+      ['HKCU\\Environment', 'Path'],
+      ['HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', 'Path'],
+    ]
+    let pending = keys.length
+    const found = []
+
+    for (const [key, name] of keys) {
+      execFile('reg', ['query', key, '/v', name], { timeout: 2500 }, (err, stdout) => {
+        if (!err && stdout) {
+          const match = String(stdout).match(/REG_(?:EXPAND_)?SZ\s+(.*)/)
+          if (match) found.push(match[1].trim())
+        }
+        if (--pending === 0) {
+          const merged = [process.env.PATH, ...found].filter(Boolean).join(path.delimiter)
+          resolve(expandWindowsVars(merged))
+        }
+      })
+    }
+  })
+}
+
+function expandWindowsVars(value) {
+  return value.replace(/%([^%]+)%/g, (whole, name) => process.env[name] ?? whole)
+}
+
+async function which() {
+  const isWindows = process.platform === 'win32'
+  const env = { ...process.env }
+  if (isWindows) {
+    try {
+      env.PATH = await freshWindowsPath()
+    } catch {
+      /* stick with the inherited PATH */
+    }
+  }
+
+  return new Promise((resolve) => {
+    const cmd = isWindows ? 'where' : 'which'
+    execFile(cmd, ['ollama'], { timeout: 3000, env }, (err, stdout) => {
       if (err || !stdout) return resolve(null)
       const first = String(stdout).split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0]
       resolve(first || null)
@@ -65,30 +137,59 @@ class OllamaClient {
     return `${this.host}${pathname}`
   }
 
-  /** Is the HTTP server answering right now? */
-  async isRunning(timeoutMs = 1500) {
+  /** Probe one address. Kept separate so `isRunning` can sweep several. */
+  async ping(host, timeoutMs = 1500) {
     try {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), timeoutMs)
-      const res = await fetch(this.url('/api/version'), { signal: controller.signal })
+      const res = await fetch(`${host}/api/version`, { signal: controller.signal })
       clearTimeout(timer)
-      if (!res.ok) return { running: false }
+      if (!res.ok) return null
       const body = await res.json().catch(() => ({}))
-      return { running: true, version: body.version || null }
+      return { version: body.version || null }
     } catch {
-      return { running: false }
+      return null
     }
+  }
+
+  /**
+   * Addresses worth trying. A deliberately configured remote host is never
+   * second-guessed; local defaults get swept because the server may be on
+   * localhost, IPv6 loopback, or wherever OLLAMA_HOST points.
+   */
+  candidateHosts() {
+    if (!LOOPBACK_HOSTS.includes(this.host)) return [this.host]
+
+    const fromEnv = normalizeHost(process.env.OLLAMA_HOST)
+    return [...new Set([this.host, ...(fromEnv ? [fromEnv] : []), ...LOOPBACK_HOSTS])]
+  }
+
+  /** Is the HTTP server answering right now, at any address we'd accept? */
+  async isRunning(timeoutMs = 1500) {
+    const hosts = this.candidateHosts()
+
+    for (const host of hosts) {
+      const hit = await this.ping(host, timeoutMs)
+      if (hit) {
+        // Remember where it actually answered so every later call goes there.
+        if (host !== this.host) this.host = host
+        return { running: true, version: hit.version, host }
+      }
+    }
+
+    return { running: false, hostsTried: hosts }
   }
 
   async status() {
     const binary = await resolveBinary()
-    const { running, version } = await this.isRunning()
+    const { running, version, hostsTried } = await this.isRunning()
     return {
       host: this.host,
       installed: Boolean(binary) || running,
       binary,
       running,
       version: version || null,
+      hostsTried: hostsTried || [this.host],
       platform: process.platform,
     }
   }
@@ -99,7 +200,13 @@ class OllamaClient {
     if (already.running) return { started: true, alreadyRunning: true }
 
     const binary = await resolveBinary()
-    if (!binary) return { started: false, error: 'Ollama is not installed on this computer.' }
+    if (!binary) {
+      return {
+        started: false,
+        installed: false,
+        error: 'Ollama is not installed on this computer yet.',
+      }
+    }
 
     try {
       serverProcess = spawn(binary, ['serve'], {
@@ -435,6 +542,17 @@ function extractErrorMessage(input, depth = 0) {
   }
 
   return text
+}
+
+/** OLLAMA_HOST is often set bare, e.g. `127.0.0.1:11434` or just a port. */
+function normalizeHost(value) {
+  if (!value || typeof value !== 'string') return null
+  let host = value.trim().replace(/\/+$/, '')
+  if (!host) return null
+  if (/^\d+$/.test(host)) host = `127.0.0.1:${host}`
+  if (!/^https?:\/\//.test(host)) host = `http://${host}`
+  if (!/:\d+$/.test(host)) host = `${host}:11434`
+  return host
 }
 
 function normalizeModel(m) {
