@@ -12,25 +12,6 @@ import { isVisionModel, isEmbeddingModel, titleFromText, classNames } from '../l
 
 const FLUSH_INTERVAL_MS = 60
 
-/**
- * Appended to every system prompt: models otherwise answer "graph this" with an
- * ASCII table. The app draws these blocks, so the instruction is a capability
- * statement rather than a style note.
- */
-const CHART_INSTRUCTIONS = `When a chart, graph or plot would answer the question, emit a fenced \`\`\`chart block containing JSON. The app renders it as a real chart.
-
-For an equation, give the expression and a domain:
-\`\`\`chart
-{"type":"line","title":"y = 2x + 5","fn":"2*x + 5","domain":[-10,10],"xLabel":"x","yLabel":"y"}
-\`\`\`
-
-For data points, give them directly:
-\`\`\`chart
-{"type":"bar","title":"Revenue by quarter","yLabel":"USD (millions)","data":[{"label":"Q1","y":12},{"label":"Q2","y":19}]}
-\`\`\`
-
-Rules: type is line, bar, scatter or area. Use "fn" (an expression in x, e.g. "sin(x)/x") or "data", never both. Several lines go in "series":[{"name":"...","fn":"..."}]. Emit only valid JSON inside the block, no comments or trailing commas, and keep your ordinary prose outside it. Never draw a chart as ASCII art or as a table of numbers when a chart block would do.`
-
 export default function ChatPage({
   chat,
   models,
@@ -142,10 +123,7 @@ export default function ChatPage({
   const buildRequestMessages = useCallback(
     (history, targetModel) => {
       const payload = []
-      const systemPrompt = [chatRef.current?.systemPrompt || settings.systemPrompt || '', CHART_INSTRUCTIONS]
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .join('\n\n')
+      const systemPrompt = (chatRef.current?.systemPrompt || settings.systemPrompt || '').trim()
       if (systemPrompt) payload.push({ role: 'system', content: systemPrompt })
 
       // Images only ever go to a model that can see them; a text-only model never
